@@ -273,6 +273,7 @@ fn on_64_lanes(native: &NativeProgram, p: &ir::Program) -> HostShader {
     let lowered = lowered.expect("lower");
     assert_eq!(lowered.wave_size, Some(64));
     let shader = HostShader {
+        half_views: Vec::new(),
         stage: HwStage::Cs,
         dxil: lowered.dxil,
         user_data: lowered.user_data,
