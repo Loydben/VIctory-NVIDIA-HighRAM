@@ -3783,6 +3783,59 @@ impl<'a> Lower<'a> {
     /// (`f` is an f32 result of two halves here; rounding it again to 16 bits gives the
     /// rounding of the exact result, 24 bits being more than twice 11 and two.)
     fn f16_nearest(&mut self, f: V) -> V {
+        self.f16_nearest_bits(f)
+    }
+
+    /// [`Self::f16_nearest`] in integer arithmetic on `f`'s bits (F. Giesen's
+    /// `float_to_half_fast3_rtne`): NaN stays a (quiet) NaN, values from 65520 up become
+    /// infinity, values under the smallest normal half round through one exact float
+    /// addition, the rest round to nearest even on the bits. Its float-compare form
+    /// ([`Self::f16_nearest_compares`]) drew black and white blocks on an RTX 5090 (run
+    /// v141): the driver may fold float compares of NaN and infinity under fast math, as
+    /// [`Self::is_nan_f32`] notes; integer compares it cannot.
+    fn f16_nearest_bits(&mut self, f: V) -> V {
+        let c = self.cur;
+        let k = |l: &mut Self, v: u32| l.s.m.i32(v);
+        let bits = self.as_int(f);
+        let (sign_mask, abs_mask) = (k(self, 0x8000_0000), k(self, 0x7FFF_FFFF));
+        let sign = self.s.m.bin(c, Bin::And, bits, sign_mask);
+        let k16 = k(self, 16);
+        let sign = self.s.m.bin(c, Bin::LShr, sign, k16);
+        let a = self.s.m.bin(c, Bin::And, bits, abs_mask);
+        // NaN and infinity, and everything that rounds past the largest half.
+        let (infinity32, f16max) = (k(self, 0x7F80_0000), k(self, (127 + 16) << 23));
+        let is_nan = self.s.m.cmp(c, pred::IUGT, a, infinity32);
+        let (qnan, inf16) = (k(self, 0x7E00), k(self, 0x7C00));
+        let special = self.s.m.select(c, is_nan, qnan, inf16);
+        let big = self.s.m.cmp(c, pred::IUGE, a, f16max);
+        // Under the smallest normal half (2^-14): add 0.5 as a float, which rounds the
+        // bits that fall off to nearest even, and take the low bits back.
+        let denorm_magic = k(self, ((127 - 15) + (23 - 10) + 1) << 23);
+        let af = self.as_float(a);
+        let mf = self.as_float(denorm_magic);
+        let sum = self.s.m.bin(c, Bin::Add, af, mf);
+        let sum = self.as_int(sum);
+        let small_h = self.s.m.bin(c, Bin::Sub, sum, denorm_magic);
+        let min_normal = k(self, 113 << 23);
+        let small = self.s.m.cmp(c, pred::IULT, a, min_normal);
+        // Normal: rebias the exponent, round on the 13 bits that go, ties to even.
+        let k13 = k(self, 13);
+        let odd = self.s.m.bin(c, Bin::LShr, a, k13);
+        let one = k(self, 1);
+        let odd = self.s.m.bin(c, Bin::And, odd, one);
+        let rebias = k(self, (((15i32 - 127) << 23) + 0xFFF) as u32);
+        let n = self.s.m.bin(c, Bin::Add, a, rebias);
+        let n = self.s.m.bin(c, Bin::Add, n, odd);
+        let normal_h = self.s.m.bin(c, Bin::LShr, n, k13);
+        let h = self.s.m.select(c, small, small_h, normal_h);
+        let h = self.s.m.select(c, big, special, h);
+        self.s.m.bin(c, Bin::Or, h, sign)
+    }
+
+    /// The first form of [`Self::f16_nearest`], by float compares around the host's
+    /// conversion (kept for the tests that compare the two).
+    #[allow(dead_code)]
+    fn f16_nearest_compares(&mut self, f: V) -> V {
         let c = self.cur;
         let f32t = self.s.t.f32;
         let lo = self.f16_toward_zero(f);
@@ -13470,5 +13523,70 @@ mod tests {
         assert!(f10(0x3FF).is_nan());
         // A 16-bit float is a half already, sign included.
         assert_eq!(half(0xBC00 << half_shift(16)), -1.0);
+    }
+}
+
+#[cfg(test)]
+mod f16_nearest_bits_tests {
+    /// The integer recipe of `Lower::f16_nearest_bits`, on the CPU.
+    fn bits(f: f32) -> u16 {
+        let b = f.to_bits();
+        let sign = (b & 0x8000_0000) >> 16;
+        let a = b & 0x7FFF_FFFF;
+        let h = if a >= (127 + 16) << 23 {
+            if a > 0x7F80_0000 { 0x7E00 } else { 0x7C00 }
+        } else if a < 113 << 23 {
+            let magic = ((127 - 15) + (23 - 10) + 1) << 23;
+            (f32::from_bits(a) + f32::from_bits(magic)).to_bits().wrapping_sub(magic)
+        } else {
+            let odd = (a >> 13) & 1;
+            a.wrapping_add((((15i32 - 127) << 23) + 0xFFF) as u32).wrapping_add(odd) >> 13
+        };
+        (h | sign) as u16
+    }
+
+    /// An independent reference: the nearest half by exhaustive search over the 2^15
+    /// magnitudes (ties to the even one), infinity from 65520 up, NaN stays NaN.
+    fn reference(f: f32) -> u16 {
+        let sign = if f.is_sign_negative() { 0x8000 } else { 0 };
+        if f.is_nan() {
+            return 0x7E00 | sign;
+        }
+        let a = f64::from(f.abs());
+        if a >= 65520.0 {
+            return 0x7C00 | sign;
+        }
+        let value = |h: u16| {
+            let (e, m) = (i32::from(h >> 10), f64::from(h & 0x3FF));
+            if e == 0 { m * 2f64.powi(-24) } else { (1.0 + m / 1024.0) * 2f64.powi(e - 15) }
+        };
+        let mut best = 0u16;
+        for h in 0..0x7C00u16 {
+            let (d, db) = ((value(h) - a).abs(), (value(best) - a).abs());
+            if d < db || (d == db && h & 1 == 0 && best & 1 == 1) {
+                best = h;
+            }
+        }
+        best | sign
+    }
+
+    #[test]
+    fn the_integer_recipe_rounds_to_nearest_even_on_every_kind_of_value() {
+        let mut values = vec![
+            0.0f32, -0.0, 1.0, -1.0, 65504.0, 65519.0, 65520.0, 65536.0, 1e9, f32::INFINITY,
+            f32::NEG_INFINITY, 6.0e-8, 5.96e-8, 2.98e-8, 2.99e-8, 1e-10, 6.1035e-5, 6.1e-5,
+            3.0e-5, 0.1, 0.333_333, 2049.0, 2051.0, 4097.0, 1.0 + 1.0 / 2048.0, 1.0 + 3.0 / 2048.0,
+        ];
+        // A spread of magnitudes, both signs.
+        let mut x = 1.0e-9f32;
+        while x < 1.0e6 {
+            values.push(x);
+            values.push(-x * 1.37);
+            x *= 1.618;
+        }
+        for f in values {
+            assert_eq!(bits(f), reference(f), "{f} ({:#x})", f.to_bits());
+        }
+        assert_eq!(bits(f32::NAN) & 0x7E00, 0x7E00);
     }
 }
