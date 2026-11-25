@@ -466,7 +466,78 @@ unsafe fn sse4a(code: *const u8, xmm: &mut [M128A; 16]) -> Option<usize> {
     Some(len)
 }
 
+/// The title image's base, once it is mapped (0 before).
+static TITLE_BASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Tells the handler where the title image is mapped.
+pub fn set_title_base(base: usize) {
+    TITLE_BASE.store(base, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Return addresses (title RVAs) of the title's `memcpy` calls whose source may
+/// come out empty here: the GTA VI 1.0.2.1 script interpreter's copy opcode
+/// (handler near RVA 0x3de6466: pops an object pointer, copies `n` bytes from a
+/// field of it to the script stack). In "Gone Fishing" a native hands it an
+/// object whose pointer is null less the field's offset, so the copy reads
+/// address 0 and the title dies (runs v139, v140, v144). The script gets zeros.
+const NULL_COPY_SITES: [usize; 1] = [0x3de_6491];
+
+/// `VICTORY_SCRIPT_NULL_COPY=0` turns the guard off.
+fn null_copy_guard() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_SCRIPT_NULL_COPY").is_none_or(|v| v != "0"))
+}
+
+/// A read of the first 64 KiB inside the host `memcpy`, called from one of
+/// [`NULL_COPY_SITES`] for at most 32 bytes (`memcpy`'s leaf path: nothing
+/// pushed, so the return address is at `rsp`): the destination is zeroed and
+/// the call returns. Returns whether it took the exception.
+unsafe fn null_copy(info: *mut EXCEPTION_POINTERS) -> bool {
+    let base = TITLE_BASE.load(std::sync::atomic::Ordering::Relaxed);
+    if base == 0 || !null_copy_guard() {
+        return false;
+    }
+    // SAFETY: the system passes valid exception pointers.
+    let (record, context) = unsafe { (&*(*info).ExceptionRecord, &mut *(*info).ContextRecord) };
+    if record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION
+        || record.NumberParameters < 2
+        || record.ExceptionInformation[0] != 0
+        || record.ExceptionInformation[1] >= 0x1_0000
+        || context.R8 > 0x20
+        || context.Rcx < 0x1_0000
+    {
+        return false;
+    }
+    // SAFETY: rsp of the faulting thread; its stack is mapped.
+    let back = unsafe { (context.Rsp as *const u64).read() } as usize;
+    if !NULL_COPY_SITES.iter().any(|&rva| back == base + rva) {
+        return false;
+    }
+    // SAFETY: the destination is the script stack slot the title was about to
+    // write `r8` bytes to.
+    unsafe { std::ptr::write_bytes(context.Rcx as *mut u8, 0, context.R8 as usize) };
+    context.Rax = context.Rcx;
+    context.Rip = back as u64;
+    context.Rsp += 8;
+    static SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n < 8 || n.is_power_of_two() {
+        eprintln!(
+            "VIctory: the title's script copied {} bytes from {:#x} (an empty object) at title+{:#x}: zeros given instead ({} so far; VICTORY_SCRIPT_NULL_COPY=0 turns this off)",
+            context.R8,
+            record.ExceptionInformation[1],
+            back - base,
+            n + 1
+        );
+    }
+    true
+}
+
 unsafe extern "system" fn handler(info: *mut EXCEPTION_POINTERS) -> i32 {
+    // SAFETY: the system passes valid exception pointers.
+    if unsafe { null_copy(info) } {
+        return -1; // EXCEPTION_CONTINUE_EXECUTION
+    }
     // an instruction of the console's CPU this one lacks: emulated, the title goes on
     // SAFETY: the system passes valid exception pointers.
     if unsafe { (*(*info).ExceptionRecord).ExceptionCode } == EXCEPTION_ILLEGAL_INSTRUCTION {
@@ -1199,6 +1270,53 @@ mod tests {
             *xmm = context.Anonymous.FltSave.XmmRegisters;
             emulated.then(|| context.Rip - start)
         }
+    }
+
+    /// A null read inside `memcpy` called from the script copy opcode: the
+    /// destination gets zeros and the call returns to the title; from any
+    /// other caller, or past 64 KiB, the exception is left alone.
+    #[test]
+    fn null_copy_returns_zeros_to_the_script() {
+        let base = 0x7000_0000_0000_usize;
+        set_title_base(base);
+        let run = |back: usize, address: usize, n: u64| {
+            let mut dest = [0xab_u8; 32];
+            let mut stack = [back as u64, 0x1111];
+            // SAFETY: a zeroed record and context are valid; the guard writes
+            // only `dest` (through rcx) and the context.
+            unsafe {
+                let mut record: EXCEPTION_RECORD = std::mem::zeroed();
+                record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+                record.NumberParameters = 2;
+                record.ExceptionInformation[1] = address;
+                let mut context: CONTEXT = std::mem::zeroed();
+                context.Rip = 0x1234;
+                context.Rsp = stack.as_mut_ptr() as u64;
+                context.Rcx = dest.as_mut_ptr() as u64;
+                context.R8 = n;
+                let mut pointers = EXCEPTION_POINTERS {
+                    ExceptionRecord: &mut record,
+                    ContextRecord: &mut context,
+                };
+                let took = null_copy(&mut pointers);
+                (
+                    took,
+                    dest,
+                    context.Rip,
+                    context.Rsp - stack.as_ptr() as u64,
+                    context.Rax == dest.as_ptr() as u64,
+                )
+            }
+        };
+        let (took, dest, rip, popped, rax) = run(base + 0x3de_6491, 0, 16);
+        assert!(took && rax);
+        assert_eq!((rip, popped), ((base + 0x3de_6491) as u64, 8));
+        assert_eq!(&dest[..16], &[0; 16]);
+        assert_eq!(&dest[16..], &[0xab; 16]);
+        // another caller, an address past 64 KiB, too many bytes: not taken
+        assert!(!run(base + 0x100, 0, 16).0);
+        assert!(!run(base + 0x3de_6491, 0x2_0000, 16).0);
+        assert!(!run(base + 0x3de_6491, 0, 0x40).0);
     }
 
     fn emulate(code: &[u8], rax: u64, xmm: &mut [M128A; 16]) -> Option<u64> {
