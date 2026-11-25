@@ -4942,7 +4942,9 @@ impl<'a> Lower<'a> {
                 let t = self.s.m.bin(c, Bin::Or, t, or);
                 self.s.m.bin(c, Bin::Xor, t, xor)
             };
-            let r = if mesh_quad {
+            // A pixel's quad through quad reads, helper pixels included (see
+            // `dpp`).
+            let r = if mesh_quad || (quad && self.s.pixel) {
                 self.quad_pick(x, src)
             } else if self.helpers_read(quad) {
                 let lanes = if offset & 0x8000 != 0 {
@@ -7871,7 +7873,7 @@ impl<'a> Lower<'a> {
                 (src, inside, masks, bound_ctrl)
             }
         };
-        let mut r = if mesh_quad {
+        let mut r = if mesh_quad || (quad && self.s.pixel) {
             self.quad_pick(x, src)
         } else if let Dpp::Row { ctrl, .. } = dpp
             && self.helpers_read(quad)
