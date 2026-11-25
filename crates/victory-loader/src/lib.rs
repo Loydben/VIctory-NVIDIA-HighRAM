@@ -26,6 +26,8 @@ mod console_insn;
 mod crash;
 pub mod prepare;
 pub(crate) mod publish;
+#[cfg(windows)]
+mod render_scale;
 pub mod resolve;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod profile;

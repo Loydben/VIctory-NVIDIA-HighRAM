@@ -401,6 +401,10 @@ impl LoadedImage {
                     // SAFETY: forwarded from the caller of `spawn_main`.
                     unsafe { dll.attach() }.with_context(|| format!("attaching {name}"))?;
                 }
+                // The title's render-size mode, if asked for, before any of
+                // its code runs (`VICTORY_RENDER_SCALE`).
+                // SAFETY: the image is mapped and none of its code has run.
+                unsafe { crate::render_scale::apply(self.base()) };
                 // Where the title is, for the crash handler's known-site guards.
                 crate::crash::set_title_base(self.base());
                 // SAFETY: forwarded from the caller of `spawn_main`.
