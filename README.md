@@ -18,7 +18,7 @@ GPU (24 GB), 64 GB RAM, Series S profile.
 |---|---|
 | Menus, videos, loading screens | 30 fps |
 | Opening cutscenes | 40-42 ms a frame (**24-25 fps**) |
-| First mission, on the boat | 47-61 ms a frame (**16-21 fps**) |
+| First mission, on the boat | 60-75 ms a frame (**13-16 fps**) with the launcher's settings |
 | Longest session so far | 30 minutes and still running, no crash and no device loss |
 | Waiting for the graphics card each frame | 0 ms (it was 58 ms before `VICTORY_CARD_ALL`) |
 | Mouths move in cutscenes | yes |
@@ -39,15 +39,23 @@ form, which here melted the picture: they keep their earlier translation. Float 
 tell NaN by its bits (`VICTORY_NAN_EXACT`), as NVIDIA's driver may fold a compare's NaN case
 away. The frame rate shows on the picture (`VICTORY_PANEL=1`, F3 hides it).
 
+Also new: **no more melting.** With the title's list calls recorded on threads of their own
+(`VICTORY_THIN=1`, the base fork's default), NVIDIA's capped descriptor pool ran full: about
+500 descriptor tables a frame refused and 300 indirect draws dropped, so the water went
+missing in tiles and the picture smeared and melted the longer one played (the same as
+avatarmanz/VIctory-7900XTX issues 35, 62 and 112 on other NVIDIA cards). The launcher now sets
+`VICTORY_THIN=0`: 11 refusals a frame on average, a clean picture, about 1.5 fps slower.
+
 What is known to be wrong:
 
-- **The picture degrades the longer one plays** (smearing, "melting"), not yet found.
+- Now and then a texture flickers or the frame stutters when a new area loads: the descriptor
+  pool still runs full for a moment there.
+- Lighting is flat and colours are off indoors and in shade: the title's ray-traced light does
+  not run yet (`VICTORY_BVH_BUILDER=1` resets the card within seconds on NVIDIA).
 - The water is the darker blue of the parent forks: its transmission volumetrics are off
   until their paired form draws right.
 - A faint grid of darker diamonds on the near water in some views.
 - In-world screens (the boat's navigation display) stay dark.
-- Rooms with little direct light are dark: the title's ray-traced light does not run
-  (`VICTORY_BVH_MISS=1`).
 - The picture is softer than the Series X profile: the world is rendered at the Series S size and
   upscaled by the title's own upscaler.
 - The first run with a new build or driver stutters while pipelines are made.

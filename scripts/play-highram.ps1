@@ -38,6 +38,12 @@ $settings = @{
     VICTORY_PAIRED_ONLY = 'b5b838548eaa4050638308fb2c805641,2431bbe7dc154ad759d20bc954829c1c'
     # Frame rate and frame time on the picture, upper left (F3 shows and hides it).
     VICTORY_PANEL = '1'
+    # One recording thread. With the title's list calls on threads of their own (VICTORY_THIN=1)
+    # NVIDIA's capped descriptor pool ran full: about 500 tables a frame refused and 300
+    # indirect draws dropped, water missing in tiles and a picture that melted the longer one
+    # played (also avatarmanz/VIctory-7900XTX issues 35, 62, 112). Off: 11 a frame, clean,
+    # about 1.5 fps slower.
+    VICTORY_THIN = '0'
 }
 if ($HighRam) { $settings.VICTORY_CARD_ALL = '1'; $settings.VICTORY_FETCH_CHECK = '1' }
 if ($HalfScale) { $settings.VICTORY_RENDER_SCALE = '0.5' }
