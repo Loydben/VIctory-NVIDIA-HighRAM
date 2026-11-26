@@ -160,6 +160,33 @@ fn with_state(this: This, f: impl FnOnce(&crate::host::HostList, &mut crate::dra
     crate::copystat::recorded(started);
 }
 
+/// Whether `this` is one of our command lists (by its function table).
+/// LOCAL (Neptune's FidelityFX redirect, `crate::external`).
+#[cfg(windows)]
+pub(crate) fn is_list(this: This) -> bool {
+    if this.is_null() {
+        return false;
+    }
+    // SAFETY: a title object's first word is its table; only read.
+    let table = unsafe { (*this).table() };
+    table == LIST_FUNCTIONS.0.as_ptr() || table == NEWER_LIST_FUNCTIONS.0.as_ptr()
+}
+
+/// Runs `f` with the host list behind `this` and the draw state the title
+/// set on it; `false` if `this` has no host list. LOCAL (Neptune's
+/// FidelityFX redirect, `crate::external`).
+#[cfg(windows)]
+pub(crate) fn with_host(
+    this: This,
+    f: impl FnOnce(&crate::host::HostList, &mut crate::draw::State),
+) -> bool {
+    if !is_list(this) || host_list(this).is_none() {
+        return false;
+    }
+    with_state(this, f);
+    true
+}
+
 /// The submission of `lists` has run: each gives its descriptor tables'
 /// slots back ([`crate::draw::State::tables_done`]). A list cut at waits
 /// keeps them: its state goes with its last part.
