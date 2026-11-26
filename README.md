@@ -56,7 +56,11 @@ islands, piers and bridges, so those stay out (`VICTORY_PAIRED_ONLY` in the laun
 PR also moved 60 programs that already worked (the temporal resolves among them) to that
 form, which here melted the picture: they keep their earlier translation. Float compares now
 tell NaN by its bits (`VICTORY_NAN_EXACT`), as NVIDIA's driver may fold a compare's NaN case
-away. The frame rate shows on the picture (`VICTORY_PANEL=1`, F3 hides it).
+away. The frame rate shows on the picture: a see-through card in the upper left
+(`VICTORY_PANEL=1`; `VICTORY_PANEL=full` starts it detailed, `VICTORY_PANEL_OPACITY` sets how see-through).
+**F3** shows or hides it, **F4** switches between compact (frame rate, frame time, a frame-time
+graph) and detailed (also RAM, video memory, the card's load and where each frame's time goes).
+Measured the same speed as without it (median 76 ms against 79 ms in town).
 
 Also new: **no more melting.** With the title's list calls recorded on threads of their own
 (`VICTORY_THIN=1`, the base fork's default), NVIDIA's capped descriptor pool ran full: about
