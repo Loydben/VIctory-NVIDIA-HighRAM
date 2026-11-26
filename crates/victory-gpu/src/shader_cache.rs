@@ -79,6 +79,7 @@ fn build() -> [u8; 32] {
             "VICTORY_WAVE_PAIRS",
             "VICTORY_PAIRED_SYNC",
             "VICTORY_NAN_EXACT",
+            "VICTORY_PAIRS_FIRST",
         ] {
             bytes.extend_from_slice(name.as_bytes());
             bytes.push(b'=');

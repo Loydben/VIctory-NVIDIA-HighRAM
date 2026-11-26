@@ -570,6 +570,23 @@ fn pairs_on() -> bool {
     std::env::var_os("VICTORY_WAVE_PAIRS").is_none_or(|v| v != "0")
 }
 
+/// Whether the paired form is tried before an approximate form that takes the program
+/// (`VICTORY_PAIRS_FIRST=1`; off: only where no other form takes it). A test can choose for
+/// its own thread.
+fn pairs_first() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_PAIRS_FIRST.get() {
+        return on;
+    }
+    std::env::var_os("VICTORY_PAIRS_FIRST").is_some_and(|v| v == "1")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's choice for [`pairs_first`], for its thread only.
+    pub(super) static TEST_PAIRS_FIRST: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 #[cfg(test)]
 thread_local! {
     /// A test's choice for [`pairs_on`], for its thread only.
@@ -685,8 +702,14 @@ fn emit_forms(
         // an approximate form does not take goes on as before, and the paired form stays
         // last for it (`emit_any`). (`VICTORY_WAVE_PAIRS=0` turns the paired form off here
         // too.)
+        //
+        // In this tree that is asked for (`VICTORY_PAIRS_FIRST=1`): on an RTX 5090 Laptop the
+        // 36 programs in the paired form (the temporal resolves among them) drew black blocks
+        // on the water and shore that grew and melted the picture the longer one played,
+        // where their approximate forms had run clean for half an hour. The paired form
+        // stays for the programs no other form takes (`emit_any`).
         let exactly = |approximate: Result<(HostShader, Option<u32>), ShaderError>| {
-            if pairs_on() {
+            if pairs_on() && pairs_first() {
                 let again = paired(c, native, p, io, res);
                 report("paired lanes, before an approximate form", &again);
                 if again.is_ok() {
