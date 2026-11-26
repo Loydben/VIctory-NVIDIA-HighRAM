@@ -31,6 +31,13 @@ $settings = @{
     VICTORY_BVH_MISS = '1'; VICTORY_CARD_BUFFERS_MIN_MB = '1'; VICTORY_CARD_BUFFERS_MB = '1536'; VICTORY_COMPOSE = '1'
     # This fork: 16-bit float results rounded to nearest (no banding on NVIDIA).
     VICTORY_F16_NEAREST = '1'
+    # The paired form (fxceless PR 854) for the two programs NVIDIA refused that draw right in
+    # it: the alpha transmission prefilter (no blue blocks in the sky) and particle visibility.
+    # The water's transmission volumetrics in that form draw dark slabs on the water: left
+    # out (VICTORY_PAIRED_ONLY lists DXBC digests; unset = every program NVIDIA refuses).
+    VICTORY_PAIRED_ONLY = 'b5b838548eaa4050638308fb2c805641,2431bbe7dc154ad759d20bc954829c1c'
+    # Frame rate and frame time on the picture, upper left (F3 shows and hides it).
+    VICTORY_PANEL = '1'
 }
 if ($HighRam) { $settings.VICTORY_CARD_ALL = '1'; $settings.VICTORY_FETCH_CHECK = '1' }
 if ($HalfScale) { $settings.VICTORY_RENDER_SCALE = '0.5' }
