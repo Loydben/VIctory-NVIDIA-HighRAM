@@ -107,6 +107,12 @@ pub(crate) fn lower(parts: &Parts) -> Result<Lowered, ShaderError> {
 /// and store). Not where a group barrier would wait for lanes that left, nor
 /// where two host waves of 32 stand for a console wave (they exchange, which
 /// takes all lanes).
+/// LOCAL: `VICTORY_NAN_SCRUB=1` (off by default): see `Lower::scrub_nan`.
+pub(crate) fn nan_scrub() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_NAN_SCRUB").is_some_and(|v| v == "1"))
+}
+
 fn counted_in_threads(parts: &Parts) -> bool {
     let crate::native::StageIo::Cs(cs) = &parts.native.io else {
         return false;
@@ -6565,7 +6571,12 @@ impl<'a> Lower<'a> {
                 raw.push((x, zero));
             }
             let raw = self.end_guarded(at, &raw);
-            let other = self.s.m.cmp(self.cur, pred::EQ, stride, zero);
+            // LOCAL (fxceless #1216): only a slot marked as a constant
+            // buffer is read as one; any other non-buffer gives zeros.
+            let other = match self.slot_is_constant(src)? {
+                Some(is_constant) => is_constant,
+                None => self.s.m.cmp(self.cur, pred::EQ, stride, zero),
+            };
             let at = self.begin_guarded(Some(other));
             let h = self.handle(site, src, false, (13, 0x1_0000))?;
             let mut both = Vec::new();
@@ -7874,8 +7885,31 @@ impl<'a> Lower<'a> {
         let word = self.slot_word(src)?;
         Ok(word.map(|word| {
             let bits = self.s.m.i32(super::shader::VIEW_STRIDE_BITS);
-            self.s.m.bin(self.cur, Bin::And, word, bits)
+            let stride = self.s.m.bin(self.cur, Bin::And, word, bits);
+            if super::shader::constant_marks() {
+                // LOCAL (fxceless #1216): the mark of a constant buffer
+                // slot is no stride.
+                let mark = self.s.m.i32(super::shader::SLOT_STRIDE_CONSTANT);
+                let is_constant = self.s.m.cmp(self.cur, pred::EQ, word, mark);
+                let zero = self.s.m.i32(0);
+                self.s.m.select(self.cur, is_constant, zero, stride)
+            } else {
+                stride
+            }
         }))
+    }
+
+    /// LOCAL (fxceless #1216): with [`super::shader::constant_marks`],
+    /// whether the slot `src` names holds a constant buffer view.
+    fn slot_is_constant(&mut self, src: &Source) -> Result<Option<V>, Why> {
+        if !super::shader::constant_marks() {
+            return Ok(None);
+        }
+        let Some(word) = self.slot_word(src)? else {
+            return Ok(None);
+        };
+        let mark = self.s.m.i32(super::shader::SLOT_STRIDE_CONSTANT);
+        Ok(Some(self.s.m.cmp(self.cur, pred::EQ, word, mark)))
     }
 
     /// Whether the typed buffer view `src` names is one of an integer format,
@@ -11162,6 +11196,10 @@ impl<'a> Lower<'a> {
                     self.float_of(v)?
                 });
             }
+            // LOCAL: `VICTORY_NAN_SCRUB=1` (see `scrub_nan`).
+            for v in &mut vals {
+                *v = self.scrub_nan(*v);
+            }
             let h = self.handle(site, src, false, props)?;
             let at = self.begin_guarded(guard);
             let mut args = vec![h];
@@ -12121,9 +12159,9 @@ impl<'a> Lower<'a> {
                 // integer, zero- or sign-extended (VIctory 4243a96a: the face
                 // network keeps its halves in UINT views; its output was
                 // noise). shortcut: that is known of the views a program
-                // picks from the heap, not of those in its tables; and the
-                // handle stays a float one, whose bits the drivers pass.
-                let integer = if typed { self.integer_view(src)? } else { None };
+                // picks from the heap; and the handle stays a float one,
+                // whose bits the drivers pass.
+                let integer = if typed && !halves { self.integer_view(src)? } else { None };
                 let mut wide = Vec::new();
                 for k in 0..count {
                     let mut x = vals[(k / 2) as usize];
@@ -12352,6 +12390,27 @@ impl<'a> Lower<'a> {
         Ok(())
     }
 
+    /// LOCAL: with `VICTORY_NAN_SCRUB=1` (off by default), `f` or 0 where it
+    /// is NaN. Used on the colours pixel shaders write and on float image
+    /// stores: a NaN that reaches the title's bloom, blur or temporal
+    /// upscaler spreads into black patches that stay in its history (seen on
+    /// NVIDIA as black blobs on faces and in the air). Not what the console
+    /// does, so it is a switch; part of the shader cache key.
+    fn scrub_nan(&mut self, f: V) -> V {
+        if !nan_scrub() {
+            return f;
+        }
+        // NaN or an infinity (11/26: the whole picture went white at one
+        // angle with only NaN scrubbed: an infinity through bloom or the
+        // exposure does the same). |f| >= inf, unordered: true for NaN too.
+        let c = self.cur;
+        let a = self.unary(6, f);
+        let inf = self.s.m.f32(0x7f80_0000);
+        let bad = self.s.m.cmp(c, pred::UGE, a, inf);
+        let zero = self.s.m.f32(0);
+        self.s.m.select(c, bad, zero, f)
+    }
+
     fn export(&mut self, b: usize, i: usize) -> Result<(), Why> {
         let e = *self
             .exports
@@ -12537,6 +12596,8 @@ impl<'a> Lower<'a> {
             (true, false) => ("storeVertexOutput", 171),
             (true, true) => ("storePrimitiveOutput", 172),
         };
+        // LOCAL: a colour a pixel shader writes (`VICTORY_NAN_SCRUB`).
+        let colour = self.s.pixel && matches!(e.target, Target::Color(_));
         for (id, col, value, half) in stores {
             // (an output a linked pixel program does not read: neither stored nor declared)
             if !primitive && self.drop_out.get(id).copied().unwrap_or(false) {
@@ -12559,12 +12620,19 @@ impl<'a> Lower<'a> {
             let el = &mut elements(self, primitive)[id];
             el.usage |= 1 << col;
             let (suffix, x) = match el.comp {
-                9 if half.is_some() => (".f32", self.as_float(x)),
+                9 if half.is_some() => {
+                    let f = self.as_float(x);
+                    (".f32", if colour { self.scrub_nan(f) } else { f })
+                }
                 9 => {
                     let f = match self.floats.get(&value) {
                         Some(&f) => f,
                         None => self.as_float(x),
                     };
+                    // LOCAL: `VICTORY_NAN_SCRUB=1`: a colour a pixel shader
+                    // writes is 0 where it is NaN, so one bad value does not
+                    // spread through the title's blur and temporal passes.
+                    let f = if colour { self.scrub_nan(f) } else { f };
                     (".f32", f)
                 }
                 _ => (".i32", x),

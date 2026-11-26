@@ -306,6 +306,10 @@ pub(crate) struct State {
     target_handles: Vec<u64>,
     depth_handle: u64,
     targets_set: bool,
+    /// LOCAL (fxceless a35c557393): the formats of the views
+    /// [`State::set_targets`] bound (eight targets, then depth), for the
+    /// draws' pipelines (`crate::pipeline::host_pipeline_for`).
+    target_formats: crate::pipeline::host::TargetFormats,
     /// The render target views and the depth view the host list has, once
     /// it has any ([`State::set_targets`]): per view the host texture (0:
     /// a null view) and what its descriptor says.
@@ -1060,6 +1064,16 @@ impl State {
             crate::capture::note_target(record.resource);
             Some((texture, record))
         });
+        // The formats of the host views, for the draws' pipelines (before
+        // the bind cache below, which can return early).
+        let mut formats = [0u32; 9];
+        for (i, (texture, desc)) in views.iter().take(8).enumerate() {
+            formats[i] = bound_format(*texture, desc.as_ref().map(|d| d.Format));
+        }
+        if let Some((texture, record)) = dsv.as_ref() {
+            formats[8] = bound_format(Some(*texture), record.depth_desc().as_ref().map(|d| d.Format));
+        }
+        self.target_formats = formats;
         let now = (keys, dsv.as_ref().map(|(texture, record)| (texture.as_raw() as usize, record.key())));
         static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *CACHE.get_or_init(|| std::env::var("VICTORY_BIND_CACHE").map_or(true, |v| v != "0"))
@@ -1347,7 +1361,7 @@ impl State {
         if crate::pipeline::is_skipped(self.pipeline as This) {
             return false;
         }
-        let Some(p) = crate::pipeline::host_pipeline(self.pipeline as This) else {
+        let Some(p) = crate::pipeline::host_pipeline_for(self.pipeline as This, &self.target_formats) else {
             return false;
         };
         if p.compute || p.mesh != mesh {
@@ -2215,7 +2229,18 @@ impl State {
         static PASSED: AtomicU64 = AtomicU64::new(0);
         let now = crate::host::now_ms();
         let took = now.saturating_sub(PASSED.swap(now, Ordering::Relaxed)).max(1);
-        let most = (4000 / took).clamp(16, 256);
+        // `VICTORY_RELOOK_MS` (20,000 unless said; 4,000 before): at 4,000 the
+        // opening cutscene's 4 frames a second looked at its ~20,000 slots
+        // waiting for their memory every 16 frames, thousands of queries
+        // a second and most of the pass's time, while slots never looked
+        // at waited. The runtime's mappings already make a slot due
+        // (`texture_slots_remapped`); these looks are only for what that
+        // does not tell.
+        static RELOOK_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let relook = *RELOOK_MS.get_or_init(|| {
+            std::env::var("VICTORY_RELOOK_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(20_000)
+        });
+        let most = (relook / took).clamp(16, 1024);
         // What a table entry of a texture a shader samples says.
         let sampled = UsedResource {
             kind: ResourceType::Srv,
@@ -4084,6 +4109,18 @@ pub(crate) fn view_kind(view: &View) -> Option<ResourceType> {
     }
 }
 
+/// LOCAL (fxceless a35c557393): the format of a host view of `texture`
+/// whose description names `described`: that one, else the texture's own
+/// (what the host gives a view without a format); 0 if neither is known.
+fn bound_format(texture: Option<&ID3D12Resource>, described: Option<DXGI_FORMAT>) -> u32 {
+    match (described, texture) {
+        (Some(format), _) if format.0 != 0 => format.0 as u32,
+        // SAFETY: a live texture.
+        (_, Some(texture)) => unsafe { texture.GetDesc() }.Format.0 as u32,
+        _ => 0,
+    }
+}
+
 /// The host state a depth view needs of its texture: the read state if the
 /// view writes no plane the format has (the title's read-only flags), else
 /// the write state.
@@ -4114,7 +4151,7 @@ fn depth_state(texture: &ID3D12Resource, desc: Option<&D3D12_DEPTH_STENCIL_VIEW_
 
 /// A few things, up to `N` of them without memory of the heap: what a draw's
 /// tables are gone through with, some six lists a stage.
-struct Few<T, const N: usize> {
+pub(crate) struct Few<T, const N: usize> {
     few: [T; N],
     len: usize,
     /// All of them, if they are more.

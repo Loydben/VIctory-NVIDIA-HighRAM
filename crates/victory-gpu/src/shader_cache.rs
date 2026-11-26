@@ -64,6 +64,10 @@ fn build() -> [u8; 32] {
         // executable had cached with the switch unset.
         for name in [
             "VICTORY_BVH_MISS",
+            // LOCAL: colours and image stores with NaN made 0.
+            "VICTORY_NAN_SCRUB",
+            // LOCAL (fxceless #1216): constant buffer slots marked.
+            "VICTORY_CONSTANT_MARKS",
             "VICTORY_WAVE_WIDE",
             "VICTORY_WAVE_DEEP_SKIPS",
             "VICTORY_WAVE_OWN_BITS",
