@@ -1278,12 +1278,19 @@ fn a_wave_value_used_past_a_lane_branch_takes_the_paired_form_not_an_approximate
     let c = super::Container::parse(&bytes).expect("container");
     let was = lower::TEST_HOST_WAVE.replace(Some(32));
     let pairs = super::paired(&c, &native, &p, &io, &res);
+    // (the PR's order, which this tree asks for with `VICTORY_PAIRS_FIRST=1`)
+    let first = super::TEST_PAIRS_FIRST.replace(Some(true));
     let chosen = super::emit(&c, &native, &p, &st, &io, &res);
-    // (as before: the paired form only where no other form takes the program)
+    // (as before: the paired form only where no other form takes the program; this tree's
+    // default too)
+    super::TEST_PAIRS_FIRST.set(Some(false));
+    let default = super::emit(&c, &native, &p, &st, &io, &res);
+    super::TEST_PAIRS_FIRST.set(first);
     let off = super::TEST_PAIRS.replace(Some(false));
     let approximate = super::emit(&c, &native, &p, &st, &io, &res);
     super::TEST_PAIRS.set(off);
     lower::TEST_HOST_WAVE.set(was);
+    assert!(default.expect("emit").dxil == approximate.as_ref().expect("an approximate form").dxil, "by default an approximate form comes first");
     let (pairs, wave) = pairs.expect("the paired form");
     assert_eq!(wave, Some(32));
     let (chosen, approximate) = (chosen.expect("emit"), approximate.expect("an approximate form"));
