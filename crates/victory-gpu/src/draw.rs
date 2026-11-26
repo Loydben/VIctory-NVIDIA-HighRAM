@@ -1139,6 +1139,17 @@ impl State {
     /// shortcut: the render target views are made again from the handles'
     /// descriptors as they are now, not as they were when the title set
     /// the targets (a descriptor rewritten in between names another view).
+    /// Host work the title does not know of (a PC library recorded onto the
+    /// list, `crate::external`) has run: it set its own heaps, root
+    /// signature, pipeline, targets and the rest. What the title set is set
+    /// again as after a cut ([`Self::replay`]); the heaps are marked as no
+    /// title's, so the title's go back at the next `bind` even if they are
+    /// the ones it had. LOCAL (Neptune's FidelityFX redirect).
+    pub(crate) fn after_external(&mut self, list: &HostList) {
+        self.replay(list);
+        self.host_heaps = [usize::MAX; 2];
+    }
+
     pub(crate) fn replay(&mut self, list: &HostList) {
         self.host_pipeline = 0;
         self.host_roots = [0; 2];

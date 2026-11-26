@@ -57,6 +57,12 @@ impl Object {
             refs: AtomicU32::new(0),
         }
     }
+
+    /// The object's function table (its first word), which tells its kind.
+    /// LOCAL (Neptune's FidelityFX redirect: `crate::list::is_list`).
+    pub(crate) fn table(&self) -> *const *const () {
+        self.functions
+    }
 }
 
 pub(crate) type This = *const Object;
