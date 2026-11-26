@@ -903,6 +903,14 @@ pub(super) fn with_local_waves<R>(f: impl FnOnce() -> R) -> R {
 /// the last place of a result that is not exact is then one lower than the console's).
 /// Off by default: it is exact but untried in a game run, and adds instructions to every
 /// such operation. The wave sum of 16-bit floats ([`Lower::half_sum`]) is always exact.
+/// Whether float compares (`v_cmp_*_f32`, `_f16`) tell NaN by its bits, so a host driver
+/// that compiles under fast math cannot fold their NaN case away: on unless
+/// `VICTORY_NAN_EXACT=0`.
+fn nan_exact() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_NAN_EXACT").is_none_or(|v| v != "0"))
+}
+
 fn f16_nearest_on() -> bool {
     #[cfg(test)]
     if let Some(on) = TEST_F16_NEAREST.get() {
@@ -9627,7 +9635,7 @@ impl<'a> Lower<'a> {
             let t = self.binary(35, a, lo);
             let t = self.binary(36, t, hi);
             let r = self.s.m.cast(c, Cast::FpToSi, t, i32t);
-            let nan = self.s.m.cmp(c, pred::UNO, a, a);
+            let nan = if nan_exact() { self.is_nan_f32(a) } else { self.s.m.cmp(c, pred::UNO, a, a) };
             let z = self.s.m.i32(0);
             let r = self.s.m.select(c, nan, z, r);
             return self.write_half(inst, r, guard);
@@ -10430,7 +10438,47 @@ impl<'a> Lower<'a> {
                 } else {
                     (self.fsrc(inst, 0)?, self.fsrc(inst, 1)?)
                 };
-                if op == "lg" {
+                if nan_exact() && !matches!(op, "f" | "tru") {
+                    // NaN told by its bits ([`Self::is_nan_f32`]): the NVIDIA driver compiles
+                    // under fast math and may fold a float compare's NaN case away, so a
+                    // title's NaN guard (`v_cmp_u_f32 x, x`, `v_cmp_neq_f32 x, x`) let NaNs
+                    // through into temporal filters, which spread them into black blocks
+                    // that grew frame by frame. Ordered compares are false with a NaN,
+                    // unordered ones true, whatever the host's float compare does with it.
+                    let na = self.is_nan_f32(a);
+                    let nb = self.is_nan_f32(b);
+                    let any = self.s.m.bin(c, Bin::Or, na, nb);
+                    let yes = self.s.m.bool(true);
+                    let ordered = |l: &mut Self, p| l.s.m.cmp(c, p, a, b);
+                    let lg = |l: &mut Self| {
+                        let lt = l.s.m.cmp(c, pred::OLT, a, b);
+                        let gt = l.s.m.cmp(c, pred::OGT, a, b);
+                        l.s.m.bin(c, Bin::Or, lt, gt)
+                    };
+                    let (base, unordered) = match op {
+                        "lt" => (ordered(self, pred::OLT), false),
+                        "eq" => (ordered(self, pred::OEQ), false),
+                        "le" => (ordered(self, pred::OLE), false),
+                        "gt" => (ordered(self, pred::OGT), false),
+                        "ge" => (ordered(self, pred::OGE), false),
+                        "lg" => (lg(self), false),
+                        "o" => (yes, false),
+                        "u" => (self.s.m.bool(false), true),
+                        "nge" => (ordered(self, pred::OLT), true),
+                        "nlg" => (ordered(self, pred::OEQ), true),
+                        "ngt" => (ordered(self, pred::OLE), true),
+                        "nle" => (ordered(self, pred::OGT), true),
+                        "neq" => (lg(self), true),
+                        "nlt" => (ordered(self, pred::OGE), true),
+                        _ => return Err(inst.name()),
+                    };
+                    if unordered {
+                        self.s.m.bin(c, Bin::Or, base, any)
+                    } else {
+                        let none = self.s.m.bin(c, Bin::Xor, any, yes);
+                        self.s.m.bin(c, Bin::And, base, none)
+                    }
+                } else if op == "lg" {
                     // Ordered and not equal, false for a NaN, as `olt | ogt`.
                     // `fcmp one` means the same, but the AMD D3D12 driver
                     // runs it as unordered (true for a NaN) where NVIDIA
