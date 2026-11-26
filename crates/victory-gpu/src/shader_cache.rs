@@ -80,6 +80,7 @@ fn build() -> [u8; 32] {
             "VICTORY_PAIRED_SYNC",
             "VICTORY_NAN_EXACT",
             "VICTORY_PAIRS_FIRST",
+            "VICTORY_PAIRED_ONLY",
         ] {
             bytes.extend_from_slice(name.as_bytes());
             bytes.push(b'=');

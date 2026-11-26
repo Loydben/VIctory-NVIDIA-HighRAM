@@ -545,6 +545,7 @@ fn emit_any(
         && native.wave64
         && lower::host_max_wave() == 32
         && pairs_on()
+        && pairs_for(c)
     {
         let again = paired(c, native, p, io, res);
         if std::env::var_os("VICTORY_WAVE_WHY").is_some() {
@@ -558,6 +559,22 @@ fn emit_any(
         }
     }
     r.map(|(shader, _)| shader)
+}
+
+/// Whether container `c`'s program may take the paired form: every one, unless
+/// `VICTORY_PAIRED_ONLY` lists containers by their DXBC digest (32 hex digits, or a prefix
+/// of them): then those alone, the others go on as if the form did not exist (refused where
+/// nothing else takes them). For finding which program's paired form draws wrong, and for
+/// keeping the ones that draw right.
+fn pairs_for(c: &Container) -> bool {
+    static ONLY: std::sync::OnceLock<Option<Vec<String>>> = std::sync::OnceLock::new();
+    let only = ONLY.get_or_init(|| {
+        let v = std::env::var("VICTORY_PAIRED_ONLY").ok()?;
+        Some(v.split(',').map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty()).collect())
+    });
+    let Some(only) = only else { return true };
+    let digest: String = c.digest.iter().map(|b| format!("{b:02x}")).collect();
+    only.iter().any(|o| digest.starts_with(o.as_str()))
 }
 
 /// Whether console wave64 compute programs may take the paired form ([`paired`]):
@@ -709,7 +726,7 @@ fn emit_forms(
         // where their approximate forms had run clean for half an hour. The paired form
         // stays for the programs no other form takes (`emit_any`).
         let exactly = |approximate: Result<(HostShader, Option<u32>), ShaderError>| {
-            if pairs_on() && pairs_first() {
+            if pairs_on() && pairs_first() && pairs_for(c) {
                 let again = paired(c, native, p, io, res);
                 report("paired lanes, before an approximate form", &again);
                 if again.is_ok() {
