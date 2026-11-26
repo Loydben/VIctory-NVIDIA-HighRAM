@@ -1052,6 +1052,63 @@ fn same_as_console(got: &[u32], want: &[u32]) {
     }
 }
 
+/// The ray-tracing structure builder's running sum (`XboxBvhBuilder.dll`, three programs at
+/// 0x1c0-0x208, word for word): a loop each lane stays in for `v7` rounds; round i adds
+/// LDS dword i to a total the wave carries in s17, which `v_readfirstlane_b32` takes from the
+/// first lane still in the loop (s17 is also the high half of the saved EXEC the loop's own
+/// `s_and_b64 exec, s[16:17], s[6:7]` reads first). Lanes that left keep an older total in
+/// v8, so the read must come from one that is still there. Lanes 0-15 stay one round, 16-31
+/// two, 32-47 three, 48-63 four: from the third round the first lane still in is an upper one.
+/// LDS dword i holds i + 1, so a lane in for n rounds ends with n(n + 1)/2.
+#[test]
+fn the_builders_running_sum_reads_the_first_lane_still_in_the_loop() {
+    let mut w = vec![
+        vop2(0x1A, 1, k(2), 0), // v_lshlrev_b32 v1, 2, v0: this lane's dword
+        vop2(0x25, 2, k(1), 0), // v_add_nc_u32 v2, 1, v0
+    ];
+    w.extend(ds(0x0D, 0, 1, 2, 0)); // ds_write_b32 v1, v2: dword t holds t + 1
+    w.extend([
+        0xBF8C_C07F,            // s_waitcnt lgkmcnt(0)
+        vop2(0x16, 3, k(4), 0), // v_lshrrev_b32 v3, 4, v0
+        vop2(0x25, 7, k(1), 3), // v_add_nc_u32 v7, 1, v3: the rounds
+        0x7E10_0280,            // v_mov_b32 v8, 0
+        0xBE80_047E,            // s_mov_b64 s[0:1], exec
+        0xBE86_047E,            // s_mov_b64 s[6:7], exec: the lanes still in
+        0xBE92_0380,            // s_mov_b32 s18, 0
+        0xBE91_0380,            // s_mov_b32 s17, 0
+        0xBF82_0002,            // s_branch past the loop's head
+    ]);
+    let head = w.len();
+    w.extend([
+        0x87FE_0610, // s_and_b64 exec, s[16:17], s[6:7]
+        0x7E22_0508, // v_readfirstlane_b32 s17, v8
+        0x8F10_8212, // s_lshl_b32 s16, s18, 2
+        0x8112_8112, // s_add_i32 s18, s18, 1
+        0x7E10_0210, // v_mov_b32 v8, s16
+        0xD8D8_0000,
+        0x0800_0008, // ds_read_b32 v8, v8
+        0xBF8C_C07F, // s_waitcnt lgkmcnt(0)
+        0x4A10_1011, // v_add_nc_u32 v8, s17, v8
+        0xBE90_047E, // s_mov_b64 s[16:17], exec
+        0x7DA4_0E12, // v_cmpx_eq_u32 exec, s18, v7: the lanes whose last round this was
+        0xBF80_0000, // s_nop 0
+        0x8A86_7E06, // s_andn2_b64 s[6:7], s[6:7], exec
+    ]);
+    let back = (head as i32 - (w.len() as i32 + 1)) as u16 as u32;
+    w.push(0xBF85_0000 | back); // s_cbranch_scc1 the loop's head while a lane is left
+    w.push(0xBEFE_0400); // s_mov_b64 exec, s[0:1]
+    w.extend(stores([8, 7, 0, 0]));
+    let shader = paired(&native_with(&w, true, 64, 512));
+    let Some(got) = run_paired(&shader, [0; 4], 256) else { return };
+    let want: Vec<u32> = (0..64u32)
+        .flat_map(|t| {
+            let n = (t >> 4) + 1;
+            [n * (n + 1) / 2, n, t, t]
+        })
+        .collect();
+    same_as_console(&got, &want);
+}
+
 /// One console wave of 64 threads with 256 bytes of LDS. The even lanes write their dword in
 /// one arm of a per-lane branch; the odd lanes theirs in the other arm, then, in that arm and
 /// with no barrier, read their mirror lane's (63 - n, an even lane's); the even lanes read
