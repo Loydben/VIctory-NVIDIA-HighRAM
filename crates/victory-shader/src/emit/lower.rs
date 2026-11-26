@@ -1240,6 +1240,29 @@ impl<'a> Lower<'a> {
             }
             console_lanes = true;
             s.wave_size = Some(32);
+            // A group of one console wave (one host wave of 32): its lanes share LDS without
+            // barriers, the console running them in step. A host wave's threads need not run
+            // in step (NVIDIA's do not, past a branch), so a fence alone lets a lane read what
+            // another has not written yet (the water's tiled volumetrics: one lane sets a
+            // tile's bounds, every lane folds its own in with LDS atomics, then all read them
+            // back; read early, the tile came out a dark slab). The group is the wave, so it
+            // can meet as a whole wherever every lane runs: before each LDS access there, and
+            // around the lane branches that hold accesses (`lds_meetings`).
+            // `VICTORY_PAIRED_SYNC=0` keeps the fences alone.
+            if waves == 1
+                && s.lds_dwords > 0
+                && super::group_sync() != 0
+                && std::env::var_os("VICTORY_PAIRED_SYNC").is_none_or(|v| v != "0")
+                && let Some(all) = all_lane_blocks(x.st)
+            {
+                let meet = lds_meetings(p, x.st, &all);
+                if std::env::var_os("VICTORY_WAVE_WHY").is_some() {
+                    eprintln!("PAIRED-SYNC meetings {}", if meet.is_some() { "found" } else { "refused" });
+                }
+                if let Some(meet) = meet {
+                    lds_meet = Some((all, meet));
+                }
+            }
         } else if let StageIo::Cs(cs) = x.native.io {
             s.threads = Some(cs.threads);
             s.lds_dwords = cs.lds_bytes() / 4;
@@ -5619,7 +5642,10 @@ impl<'a> Lower<'a> {
             && !name.contains("permute")
         {
             let write = !name.starts_with("ds_read");
-            if write || self.lds_last != Some(false) {
+            if self.lds_meet.as_ref().is_some_and(|(all, _)| all[b]) {
+                // (a group of one wave, in a block every lane runs: the wave meets)
+                self.lds_meeting();
+            } else if write || self.lds_last != Some(false) {
                 let (mode, void) = (self.s.m.i32(8), self.s.t.void);
                 self.s.op(self.cur, "barrier", Attr::NoDuplicate, void, 80, &[mode]);
             }
