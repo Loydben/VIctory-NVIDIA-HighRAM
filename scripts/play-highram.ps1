@@ -1,7 +1,9 @@
 # Starts the title with the settings this fork is played with (README.md, "How to run it"): NVIDIA, Series S
-# profile, the title's own render scale and upscaler, and with -HighRam (on by default) every title buffer copied
+# profile, the title's own render scale, AMD FSR through a PC FidelityFX DLL when -FsrDll is given (else the
+# title's own upscaler), trustno1's picture fixes, and with -HighRam (on by default) every title buffer copied
 # to the card (VICTORY_CARD_ALL) and relay results checked (VICTORY_FETCH_CHECK).
-#   scripts\play-highram.ps1 -Exe <path of your own copy's executable>
+#   scripts\play-highram.ps1 -Exe <path of your own copy's executable> [-FsrDll <path of amd_fidelityfx_upscaler_dx12.dll>]
+# -FsrDll          AMD FSR: the title's upscaler calls go to this PC DLL (AMD's FidelityFX SDK, not shipped here)
 # -HighRam:$false  without VICTORY_CARD_ALL / VICTORY_FETCH_CHECK (smaller cards; slower)
 # -HalfScale       the world at half the Series S size (faster, softer); other fixed scales stop the title
 # -SeriesX         the Series X profile instead (sharper, much slower)
@@ -11,6 +13,7 @@
 # Run it from a normal window, not as administrator: the driver then keeps its shader cache elsewhere.
 param(
     [Parameter(Mandatory)][string]$Exe,
+    [string]$FsrDll = '',
     [bool]$HighRam = $true,
     [switch]$HalfScale,
     [switch]$SeriesX,
@@ -23,12 +26,21 @@ $settings = @{
     VICTORY_TEXTURE_NO_WAIT = '1'; VICTORY_RELAY = '2'; VICTORY_WIDE_BACK = '1'; VICTORY_CARD_REHASH_RUNS = '1'
     VICTORY_JOIN_COPIES = '1'; VICTORY_INDIRECT_WINDOW = '1'; VICTORY_RELAY_COPY = '1'; VICTORY_CARD_STEPS = '2'
     VICTORY_INDIRECT_BATCH = '2'; VICTORY_MAP_THREADS = '1'; VICTORY_TITLE_PRIORITIES = '0'; VICTORY_CARD_AWAKE = '1'
-    VICTORY_SHOW_AFTER = '1'; VICTORY_AMBIENT = '0.8'; VICTORY_D3D12_DRED = 'light'; VICTORY_SKIP_PIPELINES = 'none'
-    VICTORY_THIN = '1'; VICTORY_JOIN_PARTS = '8'; VICTORY_UPLOAD_AHEAD = '1'
-    # VIctory-NVIDIA: wait for new shaders, more dynamic slots on NVIDIA's capped view heap, the title's own
-    # upscaler, ray walks ended at the root, compares on the card, the Series S interface plane.
-    VICTORY_PIPELINE_WAIT_MS = '10000'; VICTORY_DYNAMIC_SLOTS = '524288'; VICTORY_OWN_UPSCALER = '1'
-    VICTORY_BVH_MISS = '1'; VICTORY_CARD_BUFFERS_MIN_MB = '1'; VICTORY_CARD_BUFFERS_MB = '1536'; VICTORY_COMPOSE = '1'
+    VICTORY_SHOW_AFTER = '1'; VICTORY_AMBIENT = '0.8'; VICTORY_D3D12_DRED = 'light'
+    VICTORY_JOIN_PARTS = '8'; VICTORY_UPLOAD_AHEAD = '1'
+    # VIctory-NVIDIA: more dynamic slots on NVIDIA's capped view heap, the title's own upscaler, ray walks
+    # ended at the root, card buffers, the Series S interface plane. (No VICTORY_PIPELINE_WAIT_MS: waiting
+    # for new pipelines dropped the skin-bake draws, so faces went black.)
+    VICTORY_DYNAMIC_SLOTS = '524288'; VICTORY_OWN_UPSCALER = '1'
+    VICTORY_BVH_MISS = '1'; VICTORY_CARD_BUFFERS_MIN_MB = '1'; VICTORY_COMPOSE = '1'
+    # trustno1-coder/VIctory-NVIDIA 77e13a97: render-target format variants (no colour banding), NaN scrub,
+    # stronger ambient in shade, and the ray-traced resolve and shadow shaders skipped (scripts\rt_off_hashes.txt:
+    # without the structure builder every ray missed and rooms went white).
+    VICTORY_TARGET_VARIANTS = '1'; VICTORY_NAN_SCRUB = '1'; VICTORY_AMBIENT_AIR = '1.5'; VICTORY_AMBIENT_MOST = '2'
+    VICTORY_SKIP_PIPELINES = (Get-Content (Join-Path $PSScriptRoot 'rt_off_hashes.txt') -Raw).Trim()
+    # Speed set: card buffers sized for a 16-24 GB card, six pipeline workers at low priority, texture staging.
+    VICTORY_CARD_BUFFERS_MIN_KB = '64'; VICTORY_CARD_BUFFERS_MB = '2048'; VICTORY_PIPELINE_WORKERS = '6'
+    VICTORY_PIPELINE_LOWEST = '1'; VICTORY_TEXTURE_STAGE_MS = '50'
     # This fork: 16-bit float results rounded to nearest (no banding on NVIDIA).
     VICTORY_F16_NEAREST = '1'
     # The paired form (fxceless PR 854) for the two programs NVIDIA refused that draw right in
@@ -46,6 +58,12 @@ $settings = @{
     VICTORY_THIN = '0'
 }
 if ($HighRam) { $settings.VICTORY_CARD_ALL = '1'; $settings.VICTORY_FETCH_CHECK = '1' }
+# AMD FSR (port of zm0kiemedia/Neptune_VI's FidelityFX redirect): needs one recording thread (THIN=0, above)
+# and the title's upscaler left to FSR (OWN_UPSCALER=0).
+if ($FsrDll) {
+    if (-not (Test-Path $FsrDll)) { Write-Host "No $FsrDll."; return }
+    $settings.VICTORY_FSR_DLL = (Resolve-Path $FsrDll).Path; $settings.VICTORY_OWN_UPSCALER = '0'
+}
 if ($HalfScale) { $settings.VICTORY_RENDER_SCALE = '0.5' }
 if ($AutoStart) { $settings.VICTORY_KEYS = '25:Enter,35:Enter,45:Enter,55:Enter,65:Enter,75:Enter,85:Enter,95:Enter,105:Enter,115:Enter' }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
