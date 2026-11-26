@@ -169,17 +169,22 @@ pub(crate) fn is_list(this: This) -> bool {
     }
     // SAFETY: a title object's first word is its table; only read.
     let table = unsafe { (*this).table() };
-    table == LIST_FUNCTIONS.0.as_ptr() || table == NEWER_LIST_FUNCTIONS.0.as_ptr()
+    table == LIST_FUNCTIONS.0.as_ptr() || table == NEWER_LIST_FUNCTIONS.0.as_ptr() || thin::is_thin(this)
 }
 
 /// Runs `f` with the host list behind `this` and the draw state the title
 /// set on it; `false` if `this` has no host list. LOCAL (Neptune's
-/// FidelityFX redirect, `crate::external`).
+/// FidelityFX redirect, `crate::external`). On a list whose calls are only
+/// written down (`VICTORY_THIN=1`), `f` runs later, in order with the title's
+/// calls, on the list ours translates them onto.
 #[cfg(windows)]
 pub(crate) fn with_host(
     this: This,
-    f: impl FnOnce(&crate::host::HostList, &mut crate::draw::State),
+    f: impl FnOnce(&crate::host::HostList, &mut crate::draw::State) + Send + 'static,
 ) -> bool {
+    if thin::is_thin(this) {
+        return thin::defer(this, Box::new(move |back| with_state(back, f)));
+    }
     if !is_list(this) || host_list(this).is_none() {
         return false;
     }

@@ -126,6 +126,7 @@ fn load(path: &std::path::Path) -> Result<Api, String> {
 
 /// Words of title memory changed for one call, put back after it.
 #[derive(Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct Patches(Vec<(*mut usize, usize)>);
 
 impl Patches {
@@ -349,42 +350,68 @@ extern "system" fn ffxDispatch(context: *mut *mut c_void, desc: *mut u8) -> u32 
     };
     // SAFETY: the command list's word of a dispatch description.
     let list = unsafe { desc.add(COMMAND_LIST).cast::<usize>().read_unaligned() };
-    let mut code = ERROR;
-    let mut patches = Patches::default();
-    let recorded = external::record(list as *const c_void, |pass| {
-        // SAFETY: the words of a dispatch description the title passed,
-        // aligned as the C structures are.
+    // LOCAL (thin lists, `VICTORY_THIN=1`): the dispatch may run later, when the
+    // list's calls are translated, so it works on a copy of the description
+    // (the title's may be on its stack) and of the context's value. The chained
+    // descriptions behind `pNext` are not copied: dropped, said once.
+    let mut words = vec![0u64; DESCRIPTION_BYTES / 8];
+    // SAFETY: the title passed a dispatch description; its first
+    // DESCRIPTION_BYTES bytes are read (the upscale one is about 440).
+    unsafe { std::ptr::copy_nonoverlapping(desc, words.as_mut_ptr().cast::<u8>(), DESCRIPTION_BYTES) };
+    if words[1] != 0 {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| tracing::warn!("FidelityFX dispatch: a chained description (pNext) left out"));
+        words[1] = 0;
+    }
+    // SAFETY: the title's context handle, written by ffxCreateContext.
+    let handle = unsafe { context.read() } as usize;
+    let code = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(OK));
+    let result = code.clone();
+    let recorded = external::record(list as *const c_void, move |pass| {
+        let mut words = words;
+        let desc = words.as_mut_ptr().cast::<u8>();
+        let mut handle = handle as *mut c_void;
+        // SAFETY: the words of our copy of the description, aligned as the C
+        // structures are.
         unsafe {
-            patches.set(desc.add(COMMAND_LIST).cast(), pass.command_list() as usize);
+            desc.add(COMMAND_LIST).cast::<usize>().write(pass.command_list() as usize);
             for &(at, write) in resources {
                 let slot = desc.add(at).cast::<usize>();
-                let title = slot.read_unaligned();
+                let title = slot.read();
                 if title == 0 {
                     continue;
                 }
-                let declared = desc.add(at + RESOURCE_STATE).cast::<u32>().read_unaligned();
+                let declared = desc.add(at + RESOURCE_STATE).cast::<u32>().read();
                 match pass.texture(title as *const c_void, d3d12_state(declared), write) {
-                    Some(host) => patches.set(slot, host as usize),
+                    Some(host) => slot.write(host as usize),
                     None => {
                         tracing::warn!(slot = at, resource = title, "FidelityFX dispatch: not a texture of the title");
-                        code = ERROR_PARAMETER;
+                        result.store(ERROR_PARAMETER, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
                 }
             }
-            code = (api.dispatch)(context, desc);
+            // The textures' state changes recorded before the library records
+            // (a list may hold barriers until its next use).
+            let _ = pass.command_list();
+            let done = (api.dispatch)(&mut handle, desc);
+            if done != OK {
+                tracing::warn!(code = done, "ffxDispatch on the host DLL");
+            }
+            result.store(done, std::sync::atomic::Ordering::Relaxed);
         }
     });
-    drop(patches);
     if !recorded {
         tracing::warn!("FidelityFX dispatch: the command list is not one of the title's");
         return ERROR_PARAMETER;
     }
-    if code != OK {
-        tracing::warn!(code, "ffxDispatch on the host DLL");
-    }
-    code
+    // (On a thin list the dispatch has not run yet: OK, as the console's would.)
+    code.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+/// How much of a dispatch description is copied (`ffxDispatchDescUpscale`
+/// is about 440 bytes: header, list, seven resources, then its settings).
+const DESCRIPTION_BYTES: usize = 512;
 
 pub(crate) fn module() -> HleModule {
     HleModule {

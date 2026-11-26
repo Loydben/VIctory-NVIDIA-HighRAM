@@ -469,6 +469,42 @@ const TARGETS: u64 = after(13);
 const CLEAR_RTV: u64 = after(14);
 const CLEAR_DSV: u64 = after(15);
 const COPY_TEXTURE: u64 = after(16);
+/// A job of a PC library's (the FidelityFX redirect, `crate::external`), run on
+/// the list ours records onto when the stream gets there: word 0 is a
+/// `Box<Job>` made by [`defer`], taken once.
+const EXTERNAL: u64 = after(17);
+
+/// What [`defer`] runs on the list the stream is translated onto.
+pub(crate) type Job = Box<dyn FnOnce(This) + Send>;
+
+/// Whether `this` is a list whose calls are written down.
+pub(crate) fn is_thin(this: This) -> bool {
+    if this.is_null() {
+        return false;
+    }
+    // SAFETY: a title object's first word is its table; only read.
+    let table = unsafe { (*this).table() };
+    table == super::THIN_FUNCTIONS.0.as_ptr() || table == super::NEWER_THIN_FUNCTIONS.0.as_ptr()
+}
+
+/// LOCAL (the FidelityFX redirect on thin lists): `job` runs, in order with
+/// the title's calls before and after it, on the list ours records this one's
+/// calls onto. `false` if `this` is not a thin list.
+pub(crate) fn defer(this: This, job: Job) -> bool {
+    if !is_thin(this) {
+        return false;
+    }
+    let word = Box::into_raw(Box::new(job)) as u64;
+    let front = front(this);
+    if front.closed || front.recording.is_none() {
+        // Not recording: the job would never run; dropped here.
+        // SAFETY: made just above, not handed on.
+        drop(unsafe { Box::from_raw(word as *mut Job) });
+        return false;
+    }
+    front.put(EXTERNAL, &[word]);
+    true
+}
 
 /// The bytes of `count` things at `items` (none if null).
 fn bytes_of<'a, T>(items: *const T, count: usize) -> &'a [u8] {
@@ -697,6 +733,14 @@ fn translate(list: This, stream: &[u64], left: impl Fn() -> bool) -> (u64, bool)
             // SAFETY: a list of ours.
             let uploads = unsafe { &(*list.cast::<List>()).uploads };
             held(uploads).push(block);
+            continue;
+        }
+        if op == EXTERNAL {
+            // SAFETY: made by `defer`, named once.
+            let job = *unsafe { Box::from_raw(w[0] as *mut Job) };
+            if !skip {
+                job(list);
+            }
             continue;
         }
         if skip && op != CLOSE && op != RESET {

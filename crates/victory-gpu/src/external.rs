@@ -36,7 +36,8 @@ pub struct Pass<'a> {
 impl Pass<'_> {
     /// The host `ID3D12GraphicsCommandList` (no reference taken).
     pub fn command_list(&self) -> *mut c_void {
-        windows::core::Interface::as_raw(&self.list.list)
+        // (Through the wrapper: barriers it holds are recorded first.)
+        windows::core::Interface::as_raw(&*self.list.list)
     }
 
     /// The host texture behind title texture `texture`, moved to the host
@@ -65,8 +66,9 @@ impl Pass<'_> {
 
 /// Runs `f` with title list `list`'s host list; afterwards the title's
 /// bindings are set again on it (the library set its own). `false` if
-/// `list` is not a list of ours with a host list.
-pub fn record(list: *const c_void, f: impl FnOnce(&mut Pass)) -> bool {
+/// `list` is not a list of ours with a host list. With `VICTORY_THIN=1` it
+/// runs later, when the list's calls are translated: `f` keeps what it needs.
+pub fn record(list: *const c_void, f: impl FnOnce(&mut Pass) + Send + 'static) -> bool {
     crate::list::with_host(list.cast(), |host, state| {
         f(&mut Pass { list: host });
         state.after_external(host);
