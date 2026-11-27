@@ -27,7 +27,7 @@ It ships nothing and downloads nothing: no game files, no DLLs. There are two fo
    then **PLAY**.
 
 **Advanced** (folded, in the .exe): full screen, low-memory mode (cards under 8 GB; slower), safe mode, ray tracing
-(experimental: on NVIDIA it loses the card within minutes), and a box for extra `VICTORY_NAME=value` settings, one
+(experimental: on NVIDIA it loses the card within minutes), and a box for extra `VICTORY_<NAME>=value` settings, one
 per line.
 
 The launcher remembers your choices in `%LOCALAPPDATA%\victory` (`launcher.txt` for the .exe, `launcher.json` for

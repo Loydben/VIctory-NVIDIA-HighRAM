@@ -71,7 +71,7 @@ scripts\play-fsr.ps1 -Exe "$env:VICTORY_GAME_DIR\game_scarlett_master.exe" -FsrD
 Leave out `-FsrDll` for the best picture. `scripts\play-fsr.ps1` options: `-FsrDll` (AMD FSR: a softer picture for
 about the same speed; the DLL comes from AMD's FidelityFX SDK and is not shipped here),
 `-SeriesX` (sharper, slower), `-FullScreen`, `-NoPanel`, `-LowMemory` (without the card copies, for cards under
-8 GB; slower), `-More @{VICTORY_X='1'}`. It runs Vice-Tay's `scripts\play.ps1` underneath.
+8 GB; slower), `-More @{VICTORY_LOG='debug'}`. It runs Vice-Tay's `scripts\play.ps1` underneath.
 
 A firewall rule that blocks `target\diag\victory.exe` from the network is a good idea: the title tries to send crash
 reports. Run it from your normal account, not as administrator.
