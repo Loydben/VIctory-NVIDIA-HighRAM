@@ -6,6 +6,7 @@
 # -SeriesX     the Series X profile (sharper, slower) instead of Series S
 # -FullScreen  the whole screen instead of a window
 # -NoPanel     without the performance panel (F3 shows/hides it; Ctrl+drag moves it, Ctrl+Plus/Minus resizes it)
+# -Safe        Vice-Tay's safe set (the first thing to try when something is wrong)
 # -LowMemory   without VICTORY_CARD_ALL / VICTORY_FETCH_CHECK (cards under 8 GB; slower: the card is waited for)
 # -More        other settings: -More @{VICTORY_X='1'}
 param(
@@ -15,6 +16,7 @@ param(
     [switch]$FullScreen,
     [switch]$NoPanel,
     [switch]$LowMemory,
+    [switch]$Safe,
     [hashtable]$More = @{}
 )
 $extra = @{}
@@ -27,4 +29,5 @@ foreach ($k in $More.Keys) { $extra[$k] = $More[$k] }
 $play = @{ Exe = $Exe; Console = $(if ($SeriesX) { 'series-x' } else { 'series-s' }); More = $extra }
 if (-not $FullScreen) { $play.Windowed = $true }
 if ($NoPanel) { $play.NoPanel = $true }
+if ($Safe) { $play.Safe = $true }
 & (Join-Path $PSScriptRoot 'play.ps1') @play

@@ -3,13 +3,20 @@
 A small window for people who would rather not type commands. It builds VIctory from this repository and
 starts **your own copy** of the game with the settings of `scripts\play-fsr.ps1`.
 
-It ships nothing and downloads nothing: no game files, no executables, no DLLs. It is two scripts you can read.
+It ships nothing and downloads nothing: no game files, no DLLs. There are two forms, doing the same thing:
+
+- **`VIctory-Launcher.exe`** (source: [`apps/launcher`](../apps/launcher)): from [Releases](../../../releases), built
+  by GitHub Actions from this source, with its SHA-256 in the release notes; or build it with
+  `cargo build --release -p victory-launcher`. Put it anywhere inside the folder you cloned this repository into.
+  It is not code-signed yet, so Windows SmartScreen may warn the first time: check the SHA-256, then "More info" and
+  "Run anyway".
+- **`launcher\Start-Launcher.cmd`**: the same window as a PowerShell script you can read.
 
 ## Use it
 
 1. Install, once: [Rust](https://rustup.rs/) and Visual Studio 2022 (or newer) Build Tools with
    **Desktop development with C++**. The launcher tells you if either is missing.
-2. Double-click **`launcher\Start-Launcher.cmd`**.
+2. Double-click **`VIctory-Launcher.exe`** (or `launcher\Start-Launcher.cmd`).
 3. **Your game folder**: the folder that holds `game_scarlett_master.exe` (your own dump, kept **outside** this
    repository: VIctory refuses game files inside it).
 4. **AMD FSR** (optional, **off by default**). Off gives the **best picture**. On gives a **softer, less detailed
@@ -19,7 +26,12 @@ It ships nothing and downloads nothing: no game files, no executables, no DLLs. 
 6. Press **Build** (first time only, 5-15 minutes), then **Prepare shaders** (first time only, about a minute),
    then **PLAY**.
 
-The launcher remembers your choices in `%LOCALAPPDATA%\victory\launcher.json`. Saves and the shader cache go to
+**Advanced** (folded, in the .exe): full screen, low-memory mode (cards under 8 GB; slower), safe mode, ray tracing
+(experimental: on NVIDIA it loses the card within minutes), and a box for extra `VICTORY_NAME=value` settings, one
+per line.
+
+The launcher remembers your choices in `%LOCALAPPDATA%\victory` (`launcher.txt` for the .exe, `launcher.json` for
+the script). Saves and the shader cache go to
 VIctory's defaults under `%LOCALAPPDATA%\victory`.
 
 ## In the game

@@ -1,0 +1,60 @@
+name: Launcher release
+
+# Builds VIctory-Launcher.exe from this repository's source on GitHub's own Windows machine and publishes it as a
+# release with its SHA-256, so anyone can see the download came from this code. Started by pushing a tag
+# `launcher-v*` (for example `git tag launcher-v1.0.0 && git push origin launcher-v1.0.0`) or by hand from the
+# Actions tab. The executable is never committed to the repository.
+
+on:
+  push:
+    tags: ['launcher-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (launcher-vX.Y.Z)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish the launcher
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      # The version pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - name: Build
+        run: cargo build --locked --release -p victory-launcher
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $exe = 'target\release\VIctory-Launcher.exe'
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  VIctory-Launcher.exe" | Set-Content -NoNewline -Encoding ascii VIctory-Launcher.exe.sha256
+          "SHA256=$hash" >> $env:GITHUB_ENV
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $notes = @"
+          **VIctory Launcher** built by GitHub Actions from commit ``$env:GITHUB_SHA`` of this repository ([the run](https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID)).
+
+          SHA-256 of ``VIctory-Launcher.exe``: ``$env:SHA256``
+
+          Put it inside the folder you cloned this repository into and double-click it. It ships and downloads
+          nothing: it builds VIctory from the source next to it and starts **your own copy** of the game. See
+          [launcher/README.md](https://github.com/$env:GITHUB_REPOSITORY/blob/main/launcher/README.md).
+
+          It is not code-signed yet, so Windows SmartScreen may say "Windows protected your PC" the first time:
+          check the SHA-256 above, then choose "More info" and "Run anyway" if it matches.
+          "@
+          gh release create $env:TAG target\release\VIctory-Launcher.exe VIctory-Launcher.exe.sha256 `
+            --title "VIctory Launcher $env:TAG" --notes $notes --target $env:GITHUB_SHA

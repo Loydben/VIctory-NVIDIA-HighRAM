@@ -45,8 +45,12 @@ What is known to be wrong:
 
 ### The launcher (easiest)
 
-Double-click **`launcher\Start-Launcher.cmd`**, point it at your game folder, leave **AMD FSR** off for the best
-picture (or tick it and pick AMD's DLL), press **Build**, **Prepare shaders**, then **PLAY**. It ships and downloads nothing. Details:
+**VIctory-Launcher.exe**: download it from [Releases](../../releases) (built by GitHub Actions from this source,
+with its SHA-256) and put it inside the folder you cloned this repository into, or build it yourself with
+`cargo build --release -p victory-launcher`. Double-click it, point it at your game folder, leave **AMD FSR** off for
+the best picture (or tick it and pick AMD's DLL), press **Build**, **Prepare shaders**, then **PLAY**. An
+**Advanced** section (folded) has full screen, low-memory mode, safe mode, experimental ray tracing and a box for
+extra `VICTORY_` settings. Prefer scripts? `launcher\Start-Launcher.cmd` does the same. It ships and downloads nothing. Details:
 [launcher/README.md](launcher/README.md).
 
 ### By hand

@@ -707,6 +707,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "victory-launcher"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "victory-loader"
 version = "0.1.0"
 dependencies = [
