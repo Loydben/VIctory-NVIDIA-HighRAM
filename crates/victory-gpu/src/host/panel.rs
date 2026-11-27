@@ -131,13 +131,109 @@ const fn glyph(c: u8) -> [u8; 7] {
 }
 
 /// The box's size in pixels.
-const fn size(scale: u32) -> (u32, u32) {
-    (BASE_W * scale, BASE_H * scale)
+/// The panel's size at `quarters` quarters of its base size (4 = 1x).
+const fn size(quarters: u32) -> (u32, u32) {
+    ((BASE_W * quarters).div_ceil(4), (BASE_H * quarters).div_ceil(4))
 }
 
-/// Integer scale for the swap-chain height: 1x up to 1440p, 2x at 4K.
+/// Size for the swap-chain height, in quarters: 1x up to 1440p, 2x at 4K.
 fn scale(height: u32) -> u32 {
-    if height >= 1800 { 2 } else { 1 }
+    if height >= 1800 { 8 } else { 4 }
+}
+
+/// LOCAL: where the panel sits on the picture and how big it is. Ctrl + left
+/// drag on the panel moves it, Ctrl + Plus / Ctrl + Minus resize it in half
+/// steps (0.5x to 3x), Ctrl + 0 puts it back (upper left, size by the
+/// picture's height). Kept in `%LOCALAPPDATA%\victory\panel.txt` as
+/// `x y quarters` (quarters 0: by the picture's height).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+struct Place {
+    x: u32,
+    y: u32,
+    quarters: Option<u32>,
+}
+
+const MIN_QUARTERS: u32 = 2;
+const MAX_QUARTERS: u32 = 12;
+
+impl Place {
+    fn file() -> Option<std::path::PathBuf> {
+        std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("victory").join("panel.txt"))
+    }
+
+    fn parse(text: &str) -> Place {
+        let mut n = text.split_whitespace().map(|w| w.parse::<u32>().ok());
+        let (x, y, q) = (n.next().flatten(), n.next().flatten(), n.next().flatten());
+        Place {
+            x: x.unwrap_or(0),
+            y: y.unwrap_or(0),
+            quarters: q.filter(|&q| q != 0).map(|q| q.clamp(MIN_QUARTERS, MAX_QUARTERS)),
+        }
+    }
+
+    fn load() -> Place {
+        Self::file().and_then(|f| std::fs::read_to_string(f).ok()).map_or_else(Place::default, |t| Self::parse(&t))
+    }
+
+    fn save(&self) {
+        if let Some(f) = Self::file() {
+            if let Some(dir) = f.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(f, format!("{} {} {}", self.x, self.y, self.quarters.unwrap_or(0)));
+        }
+    }
+
+    /// The size in quarters for a picture `height` rows high.
+    fn quarters(&self, height: u32) -> u32 {
+        self.quarters.unwrap_or_else(|| scale(height))
+    }
+
+    /// The upper left corner on a `width` x `height` picture for a panel of
+    /// `w` x `h`: inside the picture.
+    fn corner(&self, (width, height): (u32, u32), (w, h): (u32, u32)) -> (u32, u32) {
+        (self.x.min(width.saturating_sub(w)), self.y.min(height.saturating_sub(h)))
+    }
+}
+
+/// Whether virtual key `vk` is down now.
+fn key(vk: u16) -> bool {
+    // SAFETY: a plain query.
+    unsafe { GetAsyncKeyState(i32::from(vk)) < 0 }
+}
+
+/// One of our windows in front, if it is.
+fn front() -> Option<*mut core::ffi::c_void> {
+    let mut process = 0;
+    // SAFETY: plain queries; room for the answer.
+    let window = unsafe { GetForegroundWindow() };
+    unsafe { GetWindowThreadProcessId(window, &mut process) };
+    (process == std::process::id() && !window.is_null()).then_some(window)
+}
+
+/// The mouse on a `width` x `height` picture shown in `window`'s client area.
+fn cursor(window: *mut core::ffi::c_void, (width, height): (u32, u32)) -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetCursorPos};
+    let hwnd = HWND(window);
+    let (mut p, mut r) = (POINT::default(), RECT::default());
+    // SAFETY: plain queries on our own window; room for the answers.
+    unsafe {
+        GetCursorPos(&mut p).ok()?;
+        if !ScreenToClient(hwnd, &mut p).as_bool() {
+            return None;
+        }
+        GetClientRect(hwnd, &mut r).ok()?;
+    }
+    let (cw, ch) = (r.right - r.left, r.bottom - r.top);
+    if cw <= 0 || ch <= 0 || width == 0 || height == 0 {
+        return None;
+    }
+    Some((
+        (i64::from(p.x) * i64::from(width) / i64::from(cw)) as i32,
+        (i64::from(p.y) * i64::from(height) / i64::from(ch)) as i32,
+    ))
 }
 
 /// Bytes per pixel for a supported swap-chain format.
@@ -251,24 +347,28 @@ impl Canvas {
         x
     }
 
-    /// Packs the logical canvas scaled by `scale` into swap-chain bytes.
-    fn pack(&self, scale: u32, format: DXGI_FORMAT, pitch: usize) -> Vec<u8> {
+    /// Packs the logical canvas at `quarters` quarters of its size (nearest
+    /// pixel) into swap-chain bytes.
+    fn pack(&self, quarters: u32, format: DXGI_FORMAT, pitch: usize) -> Vec<u8> {
         let bytes = bpp(format).unwrap_or(4);
-        let s = scale as usize;
-        let out_h = self.h * s;
-        let mut out = vec![0u8; pitch * out_h];
+        let (out_w, out_h) = size(quarters);
+        let mut out = vec![0u8; pitch * out_h as usize];
         let mut enc = [0u8; 8];
-        for y in 0..self.h {
-            let top = (y * s) * pitch;
-            for x in 0..self.w {
-                encode(format, self.rgb[y * self.w + x], &mut enc[..bytes]);
-                for i in 0..s {
-                    let at = top + (x * s + i) * bytes;
-                    out[at..at + bytes].copy_from_slice(&enc[..bytes]);
-                }
+        let from_x: Vec<usize> =
+            (0..out_w).map(|x| ((x * 4 / quarters.max(1)) as usize).min(self.w.saturating_sub(1))).collect();
+        let mut last = usize::MAX;
+        for y in 0..out_h as usize {
+            let top = y * pitch;
+            let from_y = ((y as u32 * 4 / quarters.max(1)) as usize).min(self.h.saturating_sub(1));
+            if from_y == last {
+                out.copy_within(top - pitch..top, top);
+                continue;
             }
-            for i in 1..s {
-                out.copy_within(top..top + pitch, top + i * pitch);
+            last = from_y;
+            for (x, &fx) in from_x.iter().enumerate() {
+                encode(format, self.rgb[from_y * self.w + fx], &mut enc[..bytes]);
+                let at = top + x * bytes;
+                out[at..at + bytes].copy_from_slice(&enc[..bytes]);
             }
         }
         out
@@ -732,6 +832,11 @@ pub(super) struct Panel {
     changed: bool,
     buffers: Option<Buffers>,
     failed: bool,
+    /// LOCAL: where it sits and how big; the drag going on (the mouse's offset
+    /// from the corner); the size keys held at the last frame.
+    place: Place,
+    drag: Option<(i32, i32)>,
+    keys: u8,
 }
 
 impl Panel {
@@ -751,12 +856,71 @@ impl Panel {
             changed: false,
             buffers: None,
             failed: false,
+            place: Place::load(),
+            drag: None,
+            keys: 0,
+        }
+    }
+
+    /// LOCAL: Ctrl + left drag on the panel moves it; Ctrl + Plus / Minus
+    /// resize it, Ctrl + 0 puts it back ([`Place`]). Only with our window in
+    /// front; asked once a frame.
+    fn input(&mut self) {
+        const CONTROL: u16 = 0x11;
+        const LEFT: u16 = 0x01;
+        let Some(window) = front() else {
+            self.drag = None;
+            self.keys = 0;
+            return;
+        };
+        let ctrl = key(CONTROL);
+        let plus = ctrl && (key(0xBB) || key(0x6B));
+        let minus = ctrl && (key(0xBD) || key(0x6D));
+        let zero = ctrl && (key(0x30) || key(0x60));
+        let held = u8::from(plus) | u8::from(minus) << 1 | u8::from(zero) << 2;
+        let pressed = held & !self.keys;
+        self.keys = held;
+        let (width, height) = self.last_size;
+        if pressed != 0 {
+            let now = self.place.quarters(height);
+            if pressed & 4 != 0 {
+                self.place = Place::default();
+            } else if pressed & 1 != 0 {
+                self.place.quarters = Some((now + 2).min(MAX_QUARTERS));
+            } else {
+                self.place.quarters = Some(now.saturating_sub(2).max(MIN_QUARTERS));
+            }
+            self.place.save();
+        }
+        if !(ctrl && key(LEFT)) {
+            if self.drag.take().is_some() {
+                self.place.save();
+            }
+            return;
+        }
+        let Some((mx, my)) = cursor(window, (width, height)) else { return };
+        let (w, h) = size(self.place.quarters(height));
+        let (x, y) = self.place.corner((width, height), (w, h));
+        match self.drag {
+            None => {
+                let inside = mx >= x as i32 && my >= y as i32 && mx < (x + w) as i32 && my < (y + h) as i32;
+                if inside {
+                    self.drag = Some((mx - x as i32, my - y as i32));
+                }
+            }
+            Some((ox, oy)) => {
+                self.place.x = (mx - ox).clamp(0, width.saturating_sub(w) as i32) as u32;
+                self.place.y = (my - oy).clamp(0, height.saturating_sub(h) as i32) as u32;
+            }
         }
     }
 
     /// A frame was presented; `line`: the counters go back to 0 right behind
     /// this call. (Not shown it asks for the key's state and no more.)
     pub(super) fn frame(&mut self, line: bool) {
+        if shown().load(Ordering::Relaxed) {
+            self.input();
+        }
         if pressed() {
             shown().fetch_xor(true, Ordering::Relaxed);
         }
@@ -877,7 +1041,7 @@ impl Panel {
         // Not the title's: the frame recorder leaves it out.
         #[cfg(feature = "diagnostics")]
         let _ours = crate::replay::record::unrecorded();
-        let scale = scale(height);
+        let scale = self.place.quarters(height);
         let replace = self.buffers.as_ref().is_none_or(|b| (b.format, b.scale) != (format, scale));
         // SAFETY: a nonblocking query on the same queue fence used by Host::submit.
         let completed = if replace || self.changed { unsafe { host.fence.GetCompletedValue() } } else { 0 };
@@ -902,6 +1066,7 @@ impl Panel {
         let upload = if self.changed { buffers.write(snap, completed) } else { None };
         if upload.is_some() { self.changed = false; }
         let (w, h) = size(scale);
+        let (x, y) = self.place.corner((width, height), (w, h));
         let list = &list.list;
         // SAFETY: an open list and live resources; the box lies within both.
         unsafe {
@@ -946,11 +1111,11 @@ impl Panel {
                 left: 0,
                 top: 0,
                 front: 0,
-                right: w.min(width),
-                bottom: h.min(height),
+                right: w.min(width - x),
+                bottom: h.min(height - y),
                 back: 1,
             };
-            list.CopyTextureRegion(&to, 0, 0, 0, &from, Some(&part));
+            list.CopyTextureRegion(&to, x, y, 0, &from, Some(&part));
         }
         self.cost += began.elapsed();
         Some(PanelCopy { upload })
@@ -1026,7 +1191,7 @@ mod tests {
             history_ms: vec![28.0, 31.0, 85.0, 32.0],
         };
         let canvas = paint_hud(&snap);
-        for scale in [1u32, 2] {
+        for scale in [2u32, 4, 6, 8, 12] {
             let (width, height) = size(scale);
             let pitch = (width * 4).next_multiple_of(256) as usize;
             let packed = canvas.pack(scale, DXGI_FORMAT_R10G10B10A2_UNORM, pitch);
@@ -1044,5 +1209,26 @@ mod tests {
         (a.0[1], b.0[1]) = (50, 20);
         let c = b.since(a, 10.0);
         assert_eq!((c[0], c[1]), (2.0, 2.0));
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    #[test]
+    fn a_place_is_read_back_and_kept_on_the_picture() {
+        let p = Place::parse("700 40 6");
+        assert_eq!(p, Place { x: 700, y: 40, quarters: Some(6) });
+        assert_eq!(Place::parse("1 2 0").quarters, None);
+        assert_eq!(Place::parse("1 2 99").quarters, Some(MAX_QUARTERS));
+        assert_eq!(Place::parse("junk"), Place::default());
+        // A panel of 810 x 501 (1.5x) on 1920 x 1080 from (1500, 900) ends inside.
+        let (w, h) = size(6);
+        assert_eq!((w, h), (810, 501));
+        assert_eq!(p.corner((1920, 1080), (w, h)), (700, 40));
+        assert_eq!(Place { x: 1500, y: 900, quarters: None }.corner((1920, 1080), (w, h)), (1920 - 810, 1080 - 501));
+        assert_eq!(Place::default().quarters(2160), 8);
+        assert_eq!(Place::default().quarters(1080), 4);
     }
 }
