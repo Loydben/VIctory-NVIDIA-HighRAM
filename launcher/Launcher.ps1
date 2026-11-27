@@ -14,7 +14,7 @@ $stateFile = Join-Path $stateDir 'launcher.json'
 $logFile = Join-Path $stateDir 'launcher-last.log'
 New-Item -ItemType Directory -Force $stateDir | Out-Null
 
-$state = @{ game = ''; fsr = ''; seriesX = $false; panel = $true }
+$state = @{ game = ''; fsr = ''; useFsr = $false; seriesX = $false; panel = $true }
 if (Test-Path $stateFile) {
     try { (Get-Content $stateFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $state[$_.Name] = $_.Value } } catch {}
 }
@@ -24,7 +24,7 @@ function Save-State { $state | ConvertTo-Json | Set-Content $stateFile -Encoding
 $font = New-Object System.Drawing.Font('Segoe UI', 10)
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'VIctory Launcher'
-$form.ClientSize = New-Object System.Drawing.Size(640, 520)
+$form.ClientSize = New-Object System.Drawing.Size(640, 580)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'; $form.MaximizeBox = $false
 $form.Font = $font
@@ -53,24 +53,31 @@ $gameBox = New-Box 20 106 490; $gameBox.Text = $state.game
 $gameBrowse = New-Button 'Browse...' 520 104 100 28
 $gameOk = New-Label '' 20 134 600 20
 
-New-Label '2.  AMD FSR DLL (optional: amd_fidelityfx_upscaler_dx12.dll from AMD''s FidelityFX SDK)' 20 160 | Out-Null
-$fsrBox = New-Box 20 184 490; $fsrBox.Text = $state.fsr
-$fsrBrowse = New-Button 'Browse...' 520 182 100 28
+New-Label '2.  AMD FSR upscaling (optional)' 20 160 | Out-Null
+$fsrNote = New-Label 'OFF = the best picture (recommended).  ON = a softer, less detailed picture for about the same speed (measured: 17.7 against 17.3 fps) and a little more RAM.' 20 182 600 38
+$fsrNote.ForeColor = [System.Drawing.Color]::FromArgb(245, 208, 66)
+$useFsr = New-Object System.Windows.Forms.CheckBox; $useFsr.Text = 'Use AMD FSR'; $useFsr.Location = '20,224'; $useFsr.Size = '130,26'
+$form.Controls.Add($useFsr); $useFsr.Checked = [bool]$state.useFsr
+$fsrBox = New-Box 150 224 360; $fsrBox.Text = $state.fsr
+$fsrBrowse = New-Button 'Browse...' 520 222 100 28
+New-Label 'amd_fidelityfx_upscaler_dx12.dll from AMD''s FidelityFX SDK (not shipped here)' 150 252 470 20 | Out-Null
+function Update-Fsr { $fsrBox.Enabled = $useFsr.Checked; $fsrBrowse.Enabled = $useFsr.Checked }
+$useFsr.Add_CheckedChanged({ Update-Fsr }); Update-Fsr
 
-$seriesS = New-Object System.Windows.Forms.RadioButton; $seriesS.Text = 'Series S (faster)'; $seriesS.Location = '20,222'; $seriesS.Size = '170,24'
-$seriesX = New-Object System.Windows.Forms.RadioButton; $seriesX.Text = 'Series X (sharper, slower)'; $seriesX.Location = '200,222'; $seriesX.Size = '220,24'
-$panel = New-Object System.Windows.Forms.CheckBox; $panel.Text = 'FPS panel (F3)'; $panel.Location = '440,222'; $panel.Size = '190,24'
+$seriesS = New-Object System.Windows.Forms.RadioButton; $seriesS.Text = 'Series S (faster)'; $seriesS.Location = '20,284'; $seriesS.Size = '170,24'
+$seriesX = New-Object System.Windows.Forms.RadioButton; $seriesX.Text = 'Series X (sharper, slower)'; $seriesX.Location = '200,284'; $seriesX.Size = '220,24'
+$panel = New-Object System.Windows.Forms.CheckBox; $panel.Text = 'FPS panel (F3)'; $panel.Location = '440,284'; $panel.Size = '190,24'
 $form.Controls.AddRange(@($seriesS, $seriesX, $panel))
 $seriesX.Checked = [bool]$state.seriesX; $seriesS.Checked = -not $seriesX.Checked; $panel.Checked = [bool]$state.panel
 
-$build = New-Button 'Build' 20 262 140 40
-$shaders = New-Button 'Prepare shaders' 170 262 160 40
-$playBtn = New-Button 'PLAY' 480 262 140 40
+$build = New-Button 'Build' 20 322 140 40
+$shaders = New-Button 'Prepare shaders' 170 322 160 40
+$playBtn = New-Button 'PLAY' 480 322 140 40
 $playBtn.BackColor = [System.Drawing.Color]::FromArgb(36, 140, 74); $playBtn.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 12)
-$status = New-Label '' 20 310 600 22
+$status = New-Label '' 20 370 600 22
 
 $log = New-Object System.Windows.Forms.TextBox
-$log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'; $log.Location = '20,336'; $log.Size = '600,168'
+$log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'; $log.Location = '20,396'; $log.Size = '600,168'
 $log.BackColor = [System.Drawing.Color]::FromArgb(14, 15, 18); $log.ForeColor = [System.Drawing.Color]::Silver
 $log.Font = New-Object System.Drawing.Font('Consolas', 9)
 $form.Controls.Add($log)
@@ -144,21 +151,21 @@ $playBtn.Add_Click({
     if (Get-Process victory -ErrorAction SilentlyContinue) {
         [System.Windows.Forms.MessageBox]::Show('The game is already running. Close it first.', 'Play') | Out-Null; return
     }
-    $state.game = $gameBox.Text.Trim('"', ' '); $state.fsr = $fsrBox.Text.Trim('"', ' ')
+    $state.game = $gameBox.Text.Trim('"', ' '); $state.fsr = $fsrBox.Text.Trim('"', ' '); $state.useFsr = $useFsr.Checked
     $state.seriesX = $seriesX.Checked; $state.panel = $panel.Checked; Save-State
     $env:VICTORY_GAME_DIR = $state.game
     $args2 = "& '$play' -Exe '$(Get-GameExe)'"
-    if ($state.fsr) {
-        if (-not (Test-Path $state.fsr)) { [System.Windows.Forms.MessageBox]::Show("No file at $($state.fsr).", 'Play') | Out-Null; return }
+    if ($state.useFsr) {
+        if (-not $state.fsr -or -not (Test-Path $state.fsr)) { [System.Windows.Forms.MessageBox]::Show('AMD FSR is ticked but no amd_fidelityfx_upscaler_dx12.dll is chosen. Pick it, or untick AMD FSR for the best picture.', 'Play') | Out-Null; return }
         $args2 += " -FsrDll '$($state.fsr)'"
     }
     if ($state.seriesX) { $args2 += ' -SeriesX' }
     if (-not $state.panel) { $args2 += ' -NoPanel' }
-    Write-Log "--- PLAY: Series $(if ($state.seriesX) { 'X' } else { 'S' })$(if ($state.fsr) { ', AMD FSR' }) ---"
+    Write-Log "--- PLAY: Series $(if ($state.seriesX) { 'X' } else { 'S' }), $(if ($state.useFsr) { 'AMD FSR on (softer picture)' } else { 'AMD FSR off (best picture)' }) ---"
     Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $args2 -WorkingDirectory $root -WindowStyle Minimized
     $status.Text = 'Starting... the game window opens in a moment (first start of a build takes longer).'
 })
-$form.Add_FormClosing({ $state.game = $gameBox.Text.Trim('"', ' '); $state.fsr = $fsrBox.Text.Trim('"', ' '); $state.seriesX = $seriesX.Checked; $state.panel = $panel.Checked; Save-State })
+$form.Add_FormClosing({ $state.game = $gameBox.Text.Trim('"', ' '); $state.fsr = $fsrBox.Text.Trim('"', ' '); $state.useFsr = $useFsr.Checked; $state.seriesX = $seriesX.Checked; $state.panel = $panel.Checked; Save-State })
 
 Update-Checks
 [void]$form.ShowDialog()

@@ -12,8 +12,9 @@ It ships nothing and downloads nothing: no game files, no executables, no DLLs. 
 2. Double-click **`launcher\Start-Launcher.cmd`**.
 3. **Your game folder**: the folder that holds `game_scarlett_master.exe` (your own dump, kept **outside** this
    repository: VIctory refuses game files inside it).
-4. **AMD FSR DLL** (optional): `amd_fidelityfx_upscaler_dx12.dll` from AMD's FidelityFX SDK. Without it the
-   game's own upscaler runs.
+4. **AMD FSR** (optional, **off by default**). Off gives the **best picture**. On gives a **softer, less detailed
+   picture** for about the same speed (measured: 17.7 against 17.3 fps) and a little more RAM. To use it, tick
+   **Use AMD FSR** and pick `amd_fidelityfx_upscaler_dx12.dll` from AMD's FidelityFX SDK.
 5. **Series S** (faster) or **Series X** (sharper, slower), and the **FPS panel** on or off.
 6. Press **Build** (first time only, 5-15 minutes), then **Prepare shaders** (first time only, about a minute),
    then **PLAY**.
